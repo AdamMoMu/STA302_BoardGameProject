@@ -1,0 +1,596 @@
+---
+output: pdf_document
+---
+Adjust Dataset
+```{r}
+# Load data
+board_games <- read.csv(file = "board_game_data.csv")
+
+# Remove unneeded features
+board_games <- board_games[, -c(1, 2, 4, 7, 12,  14, 18, 19)]
+
+
+# Use mechanics feature to find number of mechanics
+mechanic_number <- c()
+for (i in 1:nrow(board_games)) {
+  # Split mechanics
+  split_mechanics = strsplit(board_games$mechanic[i], ",")
+  
+  # Count number of mechanics = number of " / 2
+  mechanic_number <- c(mechanic_number, lengths(regmatches(split_mechanics, gregexpr("\"", split_mechanics)))/2)
+}
+
+# Save the new column and delete old one
+board_games$mechanic_number = mechanic_number
+board_games <- board_games[,-c(10)]
+
+# create a 70/30 split in the data
+set.seed(0)
+train <- board_games[sample(1:nrow(board_games), round(nrow(board_games) * 0.7), replace=F), ]
+test <- board_games[which(!(board_games$game_id %in% train$game_id)),]
+
+# Remove Game Id as its not needed anymore
+train <- train[,-c(1)]
+test <- test[,-c(1)]
+```
+
+EDA
+```{r}
+#Build histograms
+par(mfrow=c(3,4))
+for (i in 1:ncol(train)) {
+  hist(train[,i], xlab=colnames(train)[i], ylab = "Density", main = "")
+}
+```
+
+```{r}
+#Build scatter-plots
+par(mfrow = c(3,4))
+for (i in 1:ncol(train)) {
+  if (colnames(train)[i] != "avg_rating") {
+    plot(y=train$avg_rating,x=train[,i], ylab ='avg_rating', xlab=colnames(train)[i])
+  }
+}
+
+```
+
+Checking Conditions
+```{r, fig.width=12, fig.height=7}
+full <- lm(avg_rating ~ ., data=train)
+summary(full)
+
+# check condition 2
+pairs(train[,-c(6)], lower.panel = NULL)
+
+# Remove predictor
+train <- train[, -c(7)]
+test <- test[, -c(7)]
+
+#Rebuild model
+full <- lm(avg_rating ~ ., data=train)
+summary(full)
+```
+
+```{r}
+# check condition 1
+plot(train$avg_rating ~ fitted(full), main="Y vs Fitted", xlab="Fitted", ylab="Average Rating")
+abline(a = 0, b = 1)
+```
+
+Check residual plots
+```{r}
+# make all residual plots
+r <- resid(full)
+par(mfrow=c(3,4))
+plot(r ~ fitted(full), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(train)) {
+  if (colnames(train)[i] != "avg_rating") {
+    plot(r ~ train[,i], xlab=colnames(train)[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+```
+
+
+Transformation to fix linearity/normality and non-constant varience
+```{r}
+library(car)
+
+# Create copy of training data with all values positive
+train_temp <- train + 0.1
+# might be a large negative year
+min_year <- min(train_temp$year)
+if (min_year <= 0) {
+  train_temp$year <- train_temp$year - min_year + 0.1
+}
+
+# Use Box-Cox
+p <- powerTransform(cbind(train_temp))
+summary(p)
+
+# Apply transformations needed
+train$InvRating <- (train$avg_rating)^-1
+train$sqrtMin <- sqrt(train$min_players)
+train$logOwned <- log(train$owned)
+
+test$InvRating <- (test$avg_rating)^-1
+test$sqrtMin <- sqrt(test$min_players)
+test$logOwned <- log(test$owned)
+```
+
+Check assumptions and conditions again
+Checking Conditions
+```{r, fig.width=12, fig.height=7}
+full <- lm(InvRating ~ ., data=train[, -c(1,6,8)])
+summary(full)
+
+# check condition 2
+pairs(train[,-c(1,6,8, 11)], lower.panel = NULL)
+```
+
+```{r}
+
+# check condition 1
+plot(train$InvRating ~ fitted(full), main="Inverse of Average Rating vs Fitted Rating", xlab="Fitted Average Rating", ylab="Inverse of Average Rating")
+abline(a = 0, b = 1)
+
+# Checking Assumptions
+par(mfrow=c(3,4))
+# make all residual plots
+r <- resid(full)
+plot(r ~ fitted(full), xlab="Fitted Average Rating", ylab="Residuals of the Model", main = "Residuals vs Fitted Rating")
+
+names <- c("Maximum Players", "Minimum Time for Board Game", "Maximum Time for Board Game", "Year Made", "Recomended Age", "Weight of Board Game", "Number of Game Mechanics", "Root of Minimum Players", "Log of Number of Board Games Owned")
+titles = c("Residuals vs Maximum Players", "Residuals vs Minimum Time", "Residuals vs Maximum Time", "Residuals vs Year", "Residuals vs Age", "Residuals vs Weight", "Residuals vs Mechanics Number", "Residuals vs Root of Minimum Players", "Residuals vs Log of Number Owned")
+
+for (i in 1:ncol(train[, -c(1,6,8,11)])) {
+  if (colnames(train[, -c(1,6,8,11)])[i] != "InvRating") {
+    plot(r ~ train[, -c(1,6,8,11)][,i], xlab=names[i], ylab="Residuals of the Model", main=titles[i])
+  }
+}
+
+par(mfrow=c(1,1))
+# make qq plot
+qqnorm(r)
+qqline(r)
+```
+
+Build first model
+```{r}
+full <- lm(InvRating ~ ., data=train[, -c(1,6,8)])
+vif(full)
+summary(full)
+```
+
+Conduct F-test
+```{r}
+# Model with predictors removed
+mod1 <- lm(InvRating ~ ., data=train[, -c(1,2,3,5,6,7,8)])
+anova(full,mod1)
+```
+build model with predictors removed
+```{r}
+# Switch to new model
+mod1 <- lm(InvRating ~ ., data=train[, -c(1,2,3,5,6,7,8)])
+summary(mod1)
+
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(train$InvRating ~ fitted(mod1), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(mod1)
+par(mfrow=c(2,3))
+plot(r ~ fitted(mod1), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(train[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(train[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ train[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(train[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+```
+Create models using automated procedures
+```{r}
+library(leaps)
+# Try All-Subsets
+best <- regsubsets(InvRating ~ ., data=train[, -c(1,6,8)], nbest=1)
+summary(best)
+```
+```{r}
+library(MASS)
+# Check all AIC based models
+temp <- train[, -c(1,6,8)]
+mod2 <- stepAIC(lm(InvRating ~ ., data=temp), 
+        scope=list(lower=lm(InvRating ~ 1, data=temp)),
+        direction = "backward", k=2, trace = 0)
+mod2$anova
+
+mod3 <- stepAIC(lm(InvRating ~ 1, data=temp), 
+        scope=list(upper=lm(InvRating ~ ., data=temp)),
+        direction = "forward", k=2, trace = 0)
+mod3$anova
+
+mod4 <- stepAIC(lm(InvRating ~ ., data=temp), direction="both", k=2, trace = 0)
+mod4$anova
+
+# mod3 and mod4 are the same as mod2 so it can be ignored
+```
+```{r}
+library(MASS)
+# Check all BIC based models, mod3 and mod4 are reset because they are the same as mod2
+temp <- train[, -c(1,6,8)]
+mod3 <- stepAIC(lm(InvRating ~ ., data=temp), 
+        scope=list(lower=lm(InvRating ~ 1, data=temp)),
+        direction = "backward", k=log(nrow(temp)), trace = 0)
+mod3$anova
+
+mod4 <- stepAIC(lm(InvRating ~ 1, data=temp), 
+        scope=list(upper=lm(InvRating ~ ., data=temp)),
+        direction = "forward", k=log(nrow(temp)), trace = 0)
+mod4$anova
+
+mod5 <- stepAIC(lm(InvRating ~ ., data=temp), direction="both", k=log(nrow(temp)), trace = 0)
+mod5$anova
+```
+Compile list of models
+```{r}
+modManual <- lm(InvRating ~ ., data=train[, -c(1,2,3,5,6,7,8)])
+summary(mod1)
+modAIC <- lm(InvRating ~ ., data=train[, -c(1,2,3,6,7,8)])
+summary(mod2)
+modBIC <- lm(InvRating ~ ., data=train[, -c(1,2,3,4,5,6,7,8)])
+summary(mod3)
+```
+Check all assumptions
+```{r}
+# modManual is already checked
+# check modAIC
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(train$InvRating ~ fitted(modAIC), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(modAIC)
+par(mfrow=c(2,3))
+plot(r ~ fitted(modAIC), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(train[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(train[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ train[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(train[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+```
+```{r}
+# check modBIC
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(train$InvRating ~ fitted(modBIC), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(modBIC)
+par(mfrow=c(2,3))
+plot(r ~ fitted(modBIC), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(train[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(train[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ train[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(train[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+```
+
+Print some information about each model
+```{r}
+# compare all models using adjuted R^2, AIC, and BIC. 
+preds <- c(length(coef(modManual))-1, length(coef(modAIC))-1,
+length(coef(modBIC))-1)
+rsq <-c(summary(modManual)$adj.r.squared, summary(modAIC)$adj.r.squared, summary(modBIC)$adj.r.squared)
+aic <- c(AIC(modManual), AIC(modAIC), AIC(modBIC))
+bic <- c(BIC(modManual), BIC(modAIC), BIC(modBIC))
+cbind(preds, rsq, aic, bic)
+
+# Check all multicolinearity
+vif(modManual)
+vif(modAIC)
+vif(modBIC)
+```
+
+Check influential points
+```{r}
+all <- c()
+
+# Check influential points for modManual
+n <- nrow(train)
+p <- length(coef(modManual))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(modManual)
+all <- c(all, which(D > Dcutoff))
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(modManual)
+all <- c(all, which(abs(dfs) > DFFITScut)) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(modManual)
+w3 <- c()
+for (i in 1:p+1) {
+  all <- c(all, which(abs(dfb[,i]) > DFBETAcut))
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+total1 <- length(unique(all))
+total1
+```
+
+```{r}
+all <- c()
+
+# Check influential points for modAIC
+n <- nrow(train)
+p <- length(coef(modAIC))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(modAIC)
+all <- c(all, which(D > Dcutoff))
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(modAIC)
+all <- c(all, which(abs(dfs) > DFFITScut)) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(modAIC)
+w3 <- c()
+for (i in 1:p+1) {
+  all <- c(all, which(abs(dfb[,i]) > DFBETAcut))
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+total2 <- length(unique(all))
+total2
+```
+
+```{r}
+all <- c()
+
+# Check influential points for modBIC
+n <- nrow(train)
+p <- length(coef(modBIC))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(modBIC)
+all <- c(all, which(D > Dcutoff))
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(modBIC)
+all <- c(all, which(abs(dfs) > DFFITScut)) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(modBIC)
+w3 <- c()
+for (i in 1:p+1) {
+  all <- c(all, which(abs(dfb[,i]) > DFBETAcut))
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+total3 <- length(unique(all))
+total3
+```
+Start Validation
+Build Models
+```{r}
+testManual <- lm(InvRating ~ ., data=test[, -c(1,2,3,5,6,7,8)])
+summary(testManual)
+testAIC <- lm(InvRating ~ ., data=test[, -c(1,2,3,6,7,8)])
+summary(testAIC)
+testBIC <- lm(InvRating ~ ., data=test[, -c(1,2,3,4,5,6,7,8)])
+summary(testBIC)
+```
+Check models
+First
+```{r}
+# check testManual
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(test$InvRating ~ fitted(testManual), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(testManual)
+par(mfrow=c(2,3))
+plot(r ~ fitted(testManual), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(test[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(test[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ test[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(test[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+
+# multicolinearity
+vif(testManual)
+
+# influential points
+n <- nrow(test)
+p <- length(coef(testManual))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(testManual)
+#which(D > Dcutoff)
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(testManual)
+#which(abs(dfs) > DFFITScut) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(testManual)
+w3 <- c()
+for (i in 1:p+1) {
+  #which(abs(dfb[,i]) > DFBETAcut)
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+# summary of both train and test
+summary(modManual)
+summary(testManual)
+```
+
+Second
+```{r}
+# check testAIC
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(test$InvRating ~ fitted(testAIC), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(testAIC)
+par(mfrow=c(2,3))
+plot(r ~ fitted(testAIC), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(test[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(test[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ test[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(test[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+
+# multicolinearity
+vif(testAIC)
+
+# influential points
+n <- nrow(test)
+p <- length(coef(testAIC))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(testAIC)
+#which(D > Dcutoff)
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(testAIC)
+#which(abs(dfs) > DFFITScut) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(testAIC)
+w3 <- c()
+for (i in 1:p+1) {
+  #which(abs(dfb[,i]) > DFBETAcut)
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+# summary of both train and test
+summary(modAIC)
+summary(testAIC)
+```
+
+Third
+```{r}
+# check testBIC
+# condition 2 holds since we still have the same predictors
+# check condition 1
+plot(test$InvRating ~ fitted(testBIC), main="Y vs Fitted", xlab="Fitted", ylab="Inverse Average Rating")
+abline(a = 0, b = 1)
+
+# make all residual plots
+r <- resid(testBIC)
+par(mfrow=c(2,3))
+plot(r ~ fitted(testBIC), main="", xlab="Fitted", ylab="res.")
+
+for (i in 1:ncol(test[, -c(1,2,3,5,6,7,8,11)])) {
+  if (colnames(test[, -c(1,2,3,5,6,7,8,11)])[i] != "InvRating") {
+    plot(r ~ test[, -c(1,2,3,5,6,7,8,11)][,i], xlab=colnames(test[, -c(1,6,8,11)])[i], ylab="res")
+  }
+}
+
+# make qq plot
+par(mfrow=c(1,1))
+qqnorm(r)
+qqline(r)
+
+# multicolinearity
+vif(testBIC)
+
+# influential points
+n <- nrow(test)
+p <- length(coef(testBIC))-1
+
+#Cooks Distance
+Dcutoff <- qf(0.5, p+1, n-p-1)
+D <- cooks.distance(testBIC)
+#which(D > Dcutoff)
+w1 <- length(which(D > Dcutoff))
+
+# DFFITS
+DFFITScut <- 2*sqrt((p+1)/n)
+dfs <- dffits(testBIC)
+#which(abs(dfs) > DFFITScut) 
+w2 <- length(which(abs(dfs) > DFFITScut))
+
+# DFBETA
+DFBETAcut <- 2/sqrt(n)
+dfb <- dfbetas(testBIC)
+w3 <- c()
+for (i in 1:p+1) {
+  #which(abs(dfb[,i]) > DFBETAcut)
+  w3 <- c(w3, length(which(abs(dfb[,i]) > DFBETAcut)))
+}
+
+# summary of both train and test
+summary(modBIC)
+summary(testBIC)
+```
